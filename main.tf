@@ -1,78 +1,121 @@
-provider "aws" {
-  region = "us-east-2"
+terraform {
+  required_providers {
+    azurecaf = {
+      source = "aztfmod/azurecaf"
+    }
+  }
 }
 
 provider "random" {}
 
-data "aws_availability_zones" "available" {}
+/*locals {
+  module_tag = {
+    "module" = basename(abspath(path.module))
+  }
+  tags = merge(local.module_tag, var.tags)
+}*/
+
+resource "azurecaf_name" "caf_name_winwebapp" {
+  name          = var.web_app_name
+  resource_type = "azurerm_app_service"
+  prefixes      = var.global_settings.prefixes
+  suffixes      = var.global_settings.suffixes
+  random_length = var.global_settings.random_length
+  clean_input   = true
+  passthrough   = var.global_settings.passthrough
+
+  use_slug = var.global_settings.use_slug
+}
 
 resource "random_pet" "random" {}
 
-module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "2.77.0"
+resource "azurerm_windows_web_app" "this" {
+  name                      = var.web_app_name
+  resource_group_name       = var.resource_group
+  location                  = var.location
+  https_only                = true
+  service_plan_id           = var.service_plan_id
+  virtual_network_subnet_id = var.appsvc_subnet_id
 
-  name                 = "${random_pet.random.id}-education"
-  cidr                 = "10.0.0.0/16"
-  azs                  = data.aws_availability_zones.available.names
-  public_subnets       = ["10.0.4.0/24", "10.0.5.0/24", "10.0.6.0/24"]
-  enable_dns_hostnames = true
-  enable_dns_support   = true
+  identity {
+    type         = var.identity.type
+    identity_ids = var.identity.type == "SystemAssigned" ? [] : var.identity.identity_ids
+  }
+
+  site_config {
+    vnet_route_all_enabled = true
+    use_32_bit_worker      = false
+
+    application_stack {
+      current_stack  = coalesce(var.webapp_options.application_stack.current_stack, "dotnet")
+      dotnet_version = coalesce(var.webapp_options.application_stack.dotnet_version, "v6.0")
+      java_version   = coalesce(var.webapp_options.application_stack.java_version, "17")
+      php_version    = coalesce(var.webapp_options.application_stack.php_version, "Off") #"Off" is the latest version available
+    }
+  }
+
+  sticky_settings {
+    app_setting_names = [
+      "APPINSIGHTS_INSTRUMENTATIONKEY",
+      "APPINSIGHTS_PROFILERFEATURE_VERSION",
+      "APPINSIGHTS_SNAPSHOTFEATURE_VERSION",
+      "APPLICATIONINSIGHTS_CONNECTION_STRING",
+      "ApplicationInsightsAgent_EXTENSION_VERSION",
+      "DiagnosticServices_EXTENSION_VERSION",
+      "InstrumentationEngine_EXTENSION_VERSION",
+      "SnapshotDebugger_EXTENSION_VERSION",
+      "XDT_MicrosoftApplicationInsights_BaseExtensions",
+      "XDT_MicrosoftApplicationInsights_Java",
+      "XDT_MicrosoftApplicationInsights_Mode",
+      "XDT_MicrosoftApplicationInsights_NodeJS",
+      "XDT_MicrosoftApplicationInsights_PreemptSdk"
+    ]
+  }
+
+  app_settings = {
+    "APPINSIGHTS_INSTRUMENTATIONKEY"                  = "${var.webapp_options.instrumentation_key}"
+    "APPINSIGHTS_PROFILERFEATURE_VERSION"             = "1.0.0"
+    "APPINSIGHTS_SNAPSHOTFEATURE_VERSION"             = "1.0.0"
+    "APPLICATIONINSIGHTS_CONNECTION_STRING"           = "${var.webapp_options.ai_connection_string}"
+    "ApplicationInsightsAgent_EXTENSION_VERSION"      = "~2"
+    "DiagnosticServices_EXTENSION_VERSION"            = "~3"
+    "InstrumentationEngine_EXTENSION_VERSION"         = "~1"
+    "SnapshotDebugger_EXTENSION_VERSION"              = "~1"
+    "XDT_MicrosoftApplicationInsights_BaseExtensions" = "~1"
+    "XDT_MicrosoftApplicationInsights_Java"           = "1"
+    "XDT_MicrosoftApplicationInsights_Mode"           = "recommended"
+    "XDT_MicrosoftApplicationInsights_NodeJS"         = "1"
+    "XDT_MicrosoftApplicationInsights_PreemptSdk"     = "disabled"
+  }
+
 }
 
-resource "aws_db_subnet_group" "education" {
-  name       = "${random_pet.random.id}-education"
-  subnet_ids = module.vpc.public_subnets
+resource "azurerm_monitor_diagnostic_setting" "this" {
+  count = var.enable_diagnostic_settings ? 1 : 0
 
-  tags = {
-    Name = "${random_pet.random.id} Education"
-  }
-}
+  name                       = "${azurerm_windows_web_app.this.name}-diagnostic-settings}"
+  target_resource_id         = azurerm_windows_web_app.this.id
+  log_analytics_workspace_id = var.log_analytics_workspace_id
+  # log_analytics_destination_type = "Dedicated"
 
-resource "aws_security_group" "rds" {
-  name   = "${random_pet.random.id}-education_rds"
-  vpc_id = module.vpc.vpc_id
+  enabled_log {
+    category_group = "AllLogs"
 
-  ingress {
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = ["192.80.0.0/16"]
+    ## `retention_policy` has been deprecated in favor of `azurerm_storage_management_policy` resource - to learn more https://aka.ms/diagnostic_settings_log_retention
+    # retention_policy {
+    #   days    = 0
+    #   enabled = false
+    # }
   }
 
-  egress {
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  metric {
+    category = "AllMetrics"
+    enabled  = false
+
+    ## `retention_policy` has been deprecated in favor of `azurerm_storage_management_policy` resource - to learn more https://aka.ms/diagnostic_settings_log_retention
+    # retention_policy {
+    #   days    = 0
+    #   enabled = false
+    # }
   }
-
-  tags = {
-    Name = "${random_pet.random.id}-education_rds"
-  }
-}
-
-resource "aws_db_parameter_group" "education" {
-  name   = "${random_pet.random.id}-education"
-  family = "postgres15"
-
-  parameter {
-    name  = "log_connections"
-    value = "1"
-  }
-}
-
-resource "aws_db_instance" "education" {
-  identifier             = "${var.db_name}-${random_pet.random.id}"
-  instance_class         = "db.t3.micro"
-  allocated_storage      = 5
-  engine                 = "postgres"
-  engine_version         = "15.3"
-  username               = var.db_username
-  password               = var.db_password
-  db_subnet_group_name   = aws_db_subnet_group.education.name
-  vpc_security_group_ids = [aws_security_group.rds.id]
-  parameter_group_name   = aws_db_parameter_group.education.name
-  publicly_accessible    = true
-  skip_final_snapshot    = true
 }

@@ -1,15 +1,15 @@
-output "rds_hostname" {
-  description = "RDS instance hostname"
-  value       = aws_db_instance.education.address
+output "web_app_id" {
+  value = azurerm_windows_web_app.this.id
 }
 
-output "rds_port" {
-  description = "RDS instance port"
-  value       = aws_db_instance.education.port
+output "web_app_name" {
+  value = azurerm_windows_web_app.this.name
 }
 
-output "rds_username" {
-  description = "RDS instance root username"
-  value       = aws_db_instance.education.username
+output "web_app_hostname" {
+  value = azurerm_windows_web_app.this.default_hostname
 }
 
+output "web_app_principal_id" {
+  value = azurerm_windows_web_app.this.identity.0.principal_id
+}
